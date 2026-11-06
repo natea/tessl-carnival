@@ -3,21 +3,26 @@ import {
   archBounds,
   BOOTH_SIGN_HEIGHT,
   boothBounds,
+  CAR_SPACING,
+  coasterCarBounds,
   drawArch,
   drawBooth,
   drawBunting,
   drawCloud,
+  drawCoasterCar,
   drawFloaters,
   drawFrontHedge,
   drawField,
   drawGroundLayer,
   drawProp,
+  drawTrackPiece,
   drawWalker,
   groundBounds,
   HORIZON,
   label,
   PLAYER_LOOK,
   propBounds,
+  trackPieces,
   visitorLook,
   type Box,
   type Cloud,
@@ -33,6 +38,8 @@ import {
   inputDirection,
   layoutMidway,
   pathToBooth,
+  pointOnTrack,
+  runCoaster,
   strollTiles,
   toScreen,
   toTile,
@@ -71,6 +78,7 @@ const PLAY_KEYS = new Set(['KeyE', 'Enter', 'Space']);
 const DEVCON_URL =
   'https://tessl.io/devcon?utm_source=carnival&utm_medium=midway-billboard&utm_campaign=tessl-carnival';
 const MIN_QUALITY = 0.5;
+const COASTER_CARS = 4;
 
 /** Where the player stood when they last left the midway, for this page load. */
 let returnTo: Point | undefined;
@@ -97,6 +105,9 @@ export function startMidway(canvas: HTMLCanvasElement, options: MidwayOptions): 
       name: '',
     })),
   ];
+  const track = trackPieces(map);
+  /** How far the coaster train's front car is along the track, in tiles. */
+  let coaster = 0;
   const strolls = strollTiles(map);
   const visitors = createVisitors(map, 9, Math.random);
   const clouds: Cloud[] = Array.from({ length: 9 }, (_, i) => ({
@@ -360,6 +371,26 @@ export function startMidway(canvas: HTMLCanvasElement, options: MidwayOptions): 
         draw: () => drawWalker(ctx, player, PLAYER_LOOK, true, t),
       },
     ];
+    for (const piece of track) {
+      if (!onScreen(piece.box)) continue;
+      drawables.push({
+        depth: piece.depth,
+        box: piece.box,
+        draw: () => faded(piece.box, piece.depth, () => drawTrackPiece(ctx, map.coaster, piece)),
+      });
+    }
+    for (let car = 0; car < COASTER_CARS; car++) {
+      const s = coaster - car * CAR_SPACING;
+      const p = pointOnTrack(map.coaster, s);
+      // Just in front of the track under it.
+      const depth = p.x + p.y + 0.01;
+      const box = coasterCarBounds(map.coaster, s);
+      drawables.push({
+        depth,
+        box,
+        draw: () => faded(box, depth, () => drawCoasterCar(ctx, map.coaster, s, car)),
+      });
+    }
     for (const item of scenery) {
       if (!onScreen(item.box)) continue;
       const { depth, box, booth, prop, name } = item;
@@ -428,6 +459,7 @@ export function startMidway(canvas: HTMLCanvasElement, options: MidwayOptions): 
       options.onReach(reach);
     }
 
+    if (!calm) coaster = runCoaster(map.coaster, coaster, dt);
     updateFloaters(dt);
     updateCamera(dt);
     draw(time / 1000);

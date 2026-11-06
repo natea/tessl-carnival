@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   boothInReach,
   canStand,
+  coasterSpeed,
   createVisitors,
   createWalker,
   findPath,
@@ -10,9 +11,13 @@ import {
   isBlocked,
   layoutMidway,
   pathToBooth,
+  pointOnTrack,
+  runCoaster,
   seededRandom,
   toScreen,
   toTile,
+  TRACK_LOW,
+  TRACK_STEP,
   updateVisitor,
   walk,
 } from './world';
@@ -178,6 +183,72 @@ describe('visitors', () => {
     for (const visitor of visitors) {
       expect(isBlocked(map, Math.floor(visitor.x), Math.floor(visitor.y))).toBe(false);
       expect(visitor.stride).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('the rollercoaster', () => {
+  const map = layoutMidway(['water-cannon']);
+  const track = map.coaster;
+
+  it('goes all the way round the midway, over the hedge', () => {
+    const xs = track.map((p) => p.x);
+    const ys = track.map((p) => p.y);
+    expect(Math.min(...xs)).toBeLessThan(1);
+    expect(Math.max(...xs)).toBeGreaterThan(map.width - 1);
+    expect(Math.min(...ys)).toBeLessThan(1);
+    expect(Math.max(...ys)).toBeGreaterThan(map.height - 1);
+    for (const p of track) {
+      expect(isBlocked(map, Math.floor(p.x), Math.floor(p.y)), `${p.x}, ${p.y}`).toBe(true);
+    }
+  });
+
+  it('is a closed loop with evenly spaced points', () => {
+    for (let i = 0; i < track.length; i++) {
+      const a = track[i];
+      const b = track[(i + 1) % track.length];
+      expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeLessThan(TRACK_STEP * 1.05);
+    }
+  });
+
+  it('has lots of ups and downs, the highest over the gate, and never dips into the hedge', () => {
+    let peaks = 0;
+    for (let i = 0; i < track.length; i++) {
+      const prev = track[(i - 1 + track.length) % track.length].z;
+      const next = track[(i + 1) % track.length].z;
+      if (track[i].z > prev && track[i].z >= next) peaks++;
+    }
+    expect(peaks).toBeGreaterThanOrEqual(6);
+    const highest = track.reduce((best, p) => (p.z > best.z ? p : best));
+    expect(highest.y).toBeGreaterThan(map.height - 1);
+    expect(Math.min(...track.map((p) => p.z))).toBeGreaterThanOrEqual(TRACK_LOW);
+  });
+
+  it('grows with the midway', () => {
+    const big = layoutMidway(Array.from({ length: 9 }, (_, i) => `game-${i}`));
+    expect(big.coaster.length).toBeGreaterThan(track.length);
+  });
+
+  it('wraps distances round the loop', () => {
+    const length = track.length * TRACK_STEP;
+    expect(pointOnTrack(track, length + 1)).toEqual(pointOnTrack(track, 1));
+    expect(pointOnTrack(track, 0)).toEqual(track[0]);
+  });
+
+  it('runs faster at the bottom of a drop than over the top', () => {
+    const highest = Math.max(...track.map((p) => p.z));
+    expect(coasterSpeed(track, TRACK_LOW)).toBeGreaterThan(coasterSpeed(track, highest) * 2);
+  });
+
+  it('keeps the train moving forward and on the loop', () => {
+    const length = track.length * TRACK_STEP;
+    let s = 0;
+    for (let i = 0; i < 2000; i++) {
+      const next = runCoaster(track, s, 0.05);
+      expect(next).toBeGreaterThanOrEqual(0);
+      expect(next).toBeLessThan(length);
+      expect(next > s || next < s - length / 2).toBe(true);
+      s = next;
     }
   });
 });

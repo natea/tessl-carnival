@@ -3,12 +3,15 @@ import bannerUrl from './aidevcon-banner.png';
 import { palette } from './palette';
 import {
   CART_KINDS,
+  pointOnTrack,
   toScreen,
+  TRACK_STEP,
   type BoothSlot,
   type MidwayMap,
   type Point,
   type Prop,
   type Rect,
+  type TrackPoint,
   type Walker,
 } from './world';
 
@@ -1337,6 +1340,166 @@ function ferrisWheel(ctx: Ctx, prop: Prop, t: number) {
   oval(ctx, hub[0], hub[1], 3.5, 3.5, palette.woodDark);
   legs(spread + 0.15, palette.cream);
   box(ctx, cx - 0.6, cy - 0.5, 1.2, 1, 0, 4, palette.creamShade, palette.cream, palette.creamShade);
+}
+
+// ── The rollercoaster ─────────────────────────────────────────────────────
+
+/** Half the gap between the coaster's two rails, in tiles. */
+const RAIL_GAP = 0.14;
+/** Track points per piece, so the track sorts in depth with everything else. */
+const PIECE_POINTS = 4;
+
+export interface TrackPiece {
+  /** The index of the piece's first point; it runs to the next piece's first. */
+  start: number;
+  depth: number;
+  box: Box;
+  /** False over the gate, so nobody walks into a tower. */
+  tower: boolean;
+}
+
+/** Splits the coaster's track into short pieces that can each be drawn in depth order. */
+export function trackPieces(map: MidwayMap): TrackPiece[] {
+  const track = map.coaster;
+  const pieces: TrackPiece[] = [];
+  for (let start = 0; start < track.length; start += PIECE_POINTS) {
+    const points = Array.from(
+      { length: PIECE_POINTS + 1 },
+      (_, i) => track[(start + i) % track.length],
+    );
+    const xs = points.map((p) => toScreen(p.x, p.y).x);
+    const ys = points.map((p) => toScreen(p.x, p.y).y);
+    const top = Math.min(...points.map((p, i) => ys[i] - p.z));
+    const mid = points[PIECE_POINTS / 2];
+    pieces.push({
+      start,
+      depth: mid.x + mid.y,
+      box: {
+        left: Math.min(...xs) - 8,
+        right: Math.max(...xs) + 8,
+        top: top - 6,
+        bottom: Math.max(...ys) + 6,
+      },
+      tower: !(
+        points[0].y > map.height - 1 &&
+        points[0].x > map.avenueX - 0.6 &&
+        points[0].x < map.avenueX + 2.6
+      ),
+    });
+  }
+  return pieces;
+}
+
+/** The two rails either side of a track point, `z` pixels up. */
+function rails(track: readonly TrackPoint[], i: number): [Pt, Pt] {
+  const n = track.length;
+  const p = track[i % n];
+  const prev = track[(i - 1 + n) % n];
+  const next = track[(i + 1) % n];
+  const dx = next.x - prev.x;
+  const dy = next.y - prev.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const ox = (-dy / length) * RAIL_GAP;
+  const oy = (dx / length) * RAIL_GAP;
+  return [at(p.x + ox, p.y + oy, p.z), at(p.x - ox, p.y - oy, p.z)];
+}
+
+/** A lattice tower from the ground up to the track at point `i`. */
+function tower(ctx: Ctx, track: readonly TrackPoint[], i: number) {
+  const p = track[i % track.length];
+  const foot = at(p.x, p.y);
+  const [left, right] = rails(track, i);
+  const head: Pt = [(left[0] + right[0]) / 2, (left[1] + right[1]) / 2 + 2];
+  stroke(ctx, [[foot[0] - 3, foot[1]], head], palette.metalShade, 1.6);
+  stroke(ctx, [[foot[0] + 3, foot[1]], head], palette.metal, 1.6);
+  for (let z = 14; z < p.z - 6; z += 14) {
+    const s = z / p.z;
+    stroke(
+      ctx,
+      [
+        [lerp(foot[0] - 3, head[0], s), lerp(foot[1], head[1], s)],
+        [lerp(foot[0] + 3, head[0], s), lerp(foot[1], head[1], s) - 4],
+      ],
+      palette.metalShade,
+      1,
+    );
+  }
+}
+
+export function drawTrackPiece(ctx: Ctx, track: readonly TrackPoint[], piece: TrackPiece) {
+  const indexes = Array.from({ length: PIECE_POINTS + 1 }, (_, i) => piece.start + i);
+  if (piece.tower) tower(ctx, track, piece.start);
+  // Sleepers across the rails, then the rails themselves.
+  for (const i of indexes.slice(0, -1)) {
+    const [a, b] = rails(track, i);
+    stroke(ctx, [a, b], palette.woodDark, 1.4);
+  }
+  const pairs = indexes.map((i) => rails(track, i));
+  stroke(
+    ctx,
+    pairs.map((r) => r[0]),
+    palette.red,
+    2.2,
+  );
+  stroke(
+    ctx,
+    pairs.map((r) => r[1]),
+    palette.redShade,
+    2.2,
+  );
+}
+
+/** Tiles between the fronts of neighbouring cars on the coaster train. */
+export const CAR_SPACING = 0.75;
+
+/** The screen box one coaster car is drawn in. */
+export function coasterCarBounds(track: readonly TrackPoint[], s: number): Box {
+  const p = pointOnTrack(track, s);
+  const [x, y] = at(p.x, p.y, p.z);
+  return { left: x - 12, right: x + 12, top: y - 20, bottom: y + 8 };
+}
+
+/** One car of the coaster train, `s` tiles along the track, with two riders. */
+export function drawCoasterCar(ctx: Ctx, track: readonly TrackPoint[], s: number, n: number) {
+  const p = pointOnTrack(track, s);
+  const ahead = pointOnTrack(track, s + TRACK_STEP);
+  const [x, y] = at(p.x, p.y, p.z);
+  const [ax, ay] = at(ahead.x, ahead.y, ahead.z);
+  let angle = Math.atan2(ay - y, ax - x);
+  // Keep the car upright: never draw it upside down.
+  if (angle > Math.PI / 2) angle -= Math.PI;
+  if (angle < -Math.PI / 2) angle += Math.PI;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle * 0.6);
+  for (const [rx, look] of [
+    [-3, n],
+    [3, n + 2],
+  ] as const) {
+    const skin = palette.skins[look % palette.skins.length];
+    const shirt = palette.shirts[look % palette.shirts.length];
+    oval(ctx, rx, -9, 2.6, 3, shirt);
+    oval(ctx, rx, -13, 2.4, 2.4, skin);
+    // Hands up on the way down.
+    stroke(
+      ctx,
+      [
+        [rx - 1.5, -10],
+        [rx - 2.5, -16],
+      ],
+      skin,
+      1,
+    );
+  }
+  ctx.fillStyle = n === 0 ? palette.gold : palette.red;
+  ctx.beginPath();
+  ctx.roundRect(-8, -8, 16, 7, 2.5);
+  ctx.fill();
+  ctx.fillStyle = palette.cream;
+  ctx.fillRect(-7, -5, 14, 1.4);
+  oval(ctx, -4.5, -0.5, 1.6, 1.6, palette.ink);
+  oval(ctx, 4.5, -0.5, 1.6, 1.6, palette.ink);
+  ctx.restore();
 }
 
 // ── Booths ────────────────────────────────────────────────────────────────
