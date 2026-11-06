@@ -70,6 +70,13 @@ export interface MidwayMap {
   /** The first x of the two-tile avenue; the gate sits at its south end. */
   avenueX: number;
   spawn: Point;
+  /** The rollercoaster's track, a closed loop over the hedge. */
+  coaster: TrackPoint[];
+}
+
+/** A point on the rollercoaster track: a tile position, `z` pixels up. */
+export interface TrackPoint extends Point {
+  z: number;
 }
 
 export const CART_KINDS = ['Popcorn', 'Cotton candy', 'Ice cream', 'Drinks'] as const;
@@ -223,9 +230,95 @@ export function layoutMidway(gameIds: readonly string[]): MidwayMap {
     props,
     bunting,
     avenueX: AVENUE_X,
+    coaster: coasterTrack(width, height, AVENUE_X + 1),
     // Just inside the gate, off to the side so the arch doesn't hide the player.
     spawn: { x: AVENUE_X + 3.5, y: height - 3 },
   };
+}
+
+/** Tiles between neighbouring points on the rollercoaster track. */
+export const TRACK_STEP = 0.25;
+/** The lowest the track runs, in pixels, so it clears the hedge. */
+export const TRACK_LOW = 20;
+/** How tall the hill over the gate is, above the lowest point. */
+const GATE_HILL = 100;
+/** Roughly how many tiles of track each hill takes. */
+const HILL_LENGTH = 8;
+
+/**
+ * The rollercoaster: a loop of track over the hedge, all the way round the
+ * midway, starting over the gate at `gateX`. It rises and falls over a run of
+ * hills, the tallest one over the gate. Points are TRACK_STEP tiles apart.
+ */
+export function coasterTrack(width: number, height: number, gateX: number): TrackPoint[] {
+  // The hedge's centre line, with its corners rounded off.
+  const outline: Point[] = [{ x: gateX, y: height - 0.5 }];
+  const corner = (cx: number, cy: number, from: number) => {
+    for (let i = 0; i <= 8; i++) {
+      const angle = from - (i / 8) * (Math.PI / 2);
+      outline.push({ x: cx + Math.cos(angle), y: cy + Math.sin(angle) });
+    }
+  };
+  corner(width - 1.5, height - 1.5, Math.PI / 2);
+  corner(width - 1.5, 1.5, 0);
+  corner(1.5, 1.5, -Math.PI / 2);
+  corner(1.5, height - 1.5, -Math.PI);
+  outline.push({ x: gateX, y: height - 0.5 });
+
+  // Walk the outline, dropping a point every TRACK_STEP tiles.
+  const flat: Point[] = [];
+  let carry = 0;
+  for (let i = 1; i < outline.length; i++) {
+    const a = outline[i - 1];
+    const b = outline[i];
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    let d = carry;
+    for (; d < length; d += TRACK_STEP) {
+      flat.push({ x: a.x + ((b.x - a.x) * d) / length, y: a.y + ((b.y - a.y) * d) / length });
+    }
+    carry = d - length;
+  }
+
+  const hills = Math.max(4, Math.round((flat.length * TRACK_STEP) / HILL_LENGTH));
+  const random = seededRandom(width * 31 + height);
+  const heights = Array.from({ length: hills }, (_, i) =>
+    i === 0 ? GATE_HILL : 35 + random() * 50,
+  );
+  return flat.map((p, i) => {
+    const phase = (i / flat.length) * hills;
+    const hill = heights[Math.round(phase) % hills];
+    const shape = (1 + Math.cos(phase * Math.PI * 2)) / 2;
+    return { x: p.x, y: p.y, z: TRACK_LOW + hill * shape };
+  });
+}
+
+/** Where the track is, `s` tiles along it from the gate, wrapping round. */
+export function pointOnTrack(track: readonly TrackPoint[], s: number): TrackPoint {
+  const n = track.length;
+  const at = (((s / TRACK_STEP) % n) + n) % n;
+  const i = Math.floor(at);
+  const a = track[i];
+  const b = track[(i + 1) % n];
+  const f = at - i;
+  return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, z: a.z + (b.z - a.z) * f };
+}
+
+/** How fast the train goes over the top of the highest hill, in tiles a second. */
+const CREST_SPEED = 1.5;
+/** How much the train speeds up per pixel it drops. */
+const GRAVITY = 0.35;
+
+/** The train's speed in tiles a second: slow over the tops, fast at the bottoms. */
+export function coasterSpeed(track: readonly TrackPoint[], z: number): number {
+  const top = Math.max(...track.map((p) => p.z));
+  return Math.sqrt(CREST_SPEED ** 2 + 2 * GRAVITY * Math.max(0, top - z));
+}
+
+/** Moves the train `dt` seconds along the track; returns its new distance from the gate. */
+export function runCoaster(track: readonly TrackPoint[], s: number, dt: number): number {
+  const length = track.length * TRACK_STEP;
+  const next = s + coasterSpeed(track, pointOnTrack(track, s).z) * dt;
+  return next % length;
 }
 
 /** Tile position to isometric screen pixels, relative to tile (0, 0)'s top corner. */
